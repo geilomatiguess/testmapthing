@@ -1,0 +1,1374 @@
+local INTERACTION_NAME = "NukeTrigger"
+local GROUND_ZERO_PART_NAME = "NukeGroundZero"
+local COUNTDOWN_SIGN_NAME = "NukeCountdownSign"
+
+local COUNTDOWN_SECONDS = 40
+
+local INTRO_SOUND_ID = "4915042781"
+local COUNTDOWN_BEEP_SOUND_ID = "7818577205"
+local FINAL_WARNING_SOUND_ID = "128344088342283"
+
+local SND_EXPLOSION_BOOM_ID = "79596254161483"
+local SND_LONG_RUMBLE_ID = "610327604"
+local SND_SHOCKWAVE_CRACK_ID = "124596082414077"
+local SND_DEBRIS_RATTLE_ID = "17520934057"
+local SND_FIRE_WIND_ID = "178962800"
+local SND_GEIGER_STATIC_ID = "104549126310212"
+
+local GEIGER_LOOP_SECONDS = 55
+
+local INTRO_FALLBACK_SECONDS = 5
+local FINAL_WARNING_FALLBACK_SECONDS = 3
+
+local BEEP_START_INTERVAL = 1.15
+local BEEP_END_INTERVAL = 0.075
+local BEEP_ACCEL_POWER = 2.35
+
+local FLASH_RADIUS = 280
+local FIREBALL_RADIUS = 120
+local SHOCKWAVE_RADIUS = 520
+local MUSHROOM_HEIGHT = 170
+
+local ENABLE_PLAYER_DAMAGE = false
+local INSTANT_KILL_RADIUS = 90
+local HEAVY_DAMAGE_RADIUS = 230
+local MAX_DAMAGE = 95
+
+local USE_TITLES = true
+
+local function safeCall(fn)
+	local ok, result = pcall(fn)
+	if ok then
+		return result
+	end
+	return nil
+end
+
+local function safeSet(obj, prop, value)
+	safeCall(function()
+		obj[prop] = value
+	end)
+end
+
+local function getMapInstance(name)
+	if not name or name == "" then
+		return nil
+	end
+
+	return safeCall(function()
+		return f(name)
+	end)
+end
+
+local function rgb(r, g, b)
+	return Color3.new(r / 255, g / 255, b / 255)
+end
+
+local WHITE = rgb(255, 255, 255)
+local RED = rgb(255, 30, 20)
+local ORANGE = rgb(255, 120, 25)
+local YELLOW = rgb(255, 230, 70)
+local SMOKE = rgb(95, 95, 95)
+
+local function clamp(x, a, b)
+	if x < a then
+		return a
+	end
+	if x > b then
+		return b
+	end
+	return x
+end
+
+local function lerp(a, b, t)
+	return a + ((b - a) * t)
+end
+
+local function getPosition(obj)
+	if not obj then
+		return nil
+	end
+
+	local pos = safeCall(function()
+		return obj.Position
+	end)
+
+	if pos then
+		return pos
+	end
+
+	local cf = safeCall(function()
+		return obj.CFrame
+	end)
+
+	if cf then
+		local cfPos = safeCall(function()
+			return cf.Position
+		end)
+
+		if cfPos then
+			return cfPos
+		end
+	end
+
+	return nil
+end
+
+local function vectorDistance(a, b)
+	local diff = a - b
+	return diff.Magnitude
+end
+
+local function getGroundZero()
+	local centerPart = getMapInstance(GROUND_ZERO_PART_NAME)
+	local centerPos = getPosition(centerPart)
+
+	if centerPos then
+		return centerPos
+	end
+
+	local triggerPart = getMapInstance(INTERACTION_NAME)
+	local triggerPos = getPosition(triggerPart)
+
+	if triggerPos then
+		return triggerPos
+	end
+
+	return Vector3.new(0, 8, 0)
+end
+
+local oldRuntime = getMapInstance("CinematicNuke_Runtime")
+if oldRuntime then
+	safeCall(function()
+		oldRuntime:Destroy()
+	end)
+end
+
+local Runtime = Instance.new("Folder")
+Runtime.Name = "CinematicNuke_Runtime"
+f(Runtime)
+
+local function makeFolder(name, parent)
+	local folder = Instance.new("Folder")
+	folder.Name = name
+	folder.Parent = parent or Runtime
+	return folder
+end
+
+local BombFolder = makeFolder("Bomb_Prop", Runtime)
+local ActiveEffectFolder = nil
+local BombProp = nil
+
+local function makePart(name, shape, size, cf, color, material, transparency, parent)
+	local p = Instance.new("Part")
+	p.Name = name
+
+	safeSet(p, "Anchored", true)
+	safeSet(p, "CanCollide", false)
+	safeSet(p, "CanTouch", false)
+	safeSet(p, "CanQuery", false)
+	safeSet(p, "CastShadow", false)
+
+	safeSet(p, "Size", size)
+	safeSet(p, "CFrame", cf)
+	safeSet(p, "Color", color)
+	safeSet(p, "Material", material or Enum.Material.SmoothPlastic)
+	safeSet(p, "Transparency", transparency or 0)
+
+	if shape then
+		safeSet(p, "Shape", shape)
+	end
+
+	p.Parent = parent or Runtime
+	return p
+end
+
+local function makeLight(parent, color, range, brightness)
+	local light = Instance.new("PointLight")
+	light.Name = "Cinematic_Light"
+	safeSet(light, "Color", color)
+	safeSet(light, "Range", range)
+	safeSet(light, "Brightness", brightness)
+	safeSet(light, "Shadows", true)
+	light.Parent = parent
+	return light
+end
+
+local function makeSmoke(parent, size, opacity, rise)
+	local smoke = safeCall(function()
+		return Instance.new("Smoke")
+	end)
+
+	if not smoke then
+		return nil
+	end
+
+	smoke.Name = "Cinematic_Smoke"
+	safeSet(smoke, "Color", SMOKE)
+	safeSet(smoke, "Size", size)
+	safeSet(smoke, "Opacity", opacity)
+	safeSet(smoke, "RiseVelocity", rise)
+	smoke.Parent = parent
+	return smoke
+end
+
+local function makeFire(parent, size, heat)
+	local fire = safeCall(function()
+		return Instance.new("Fire")
+	end)
+
+	if not fire then
+		return nil
+	end
+
+	fire.Name = "Cinematic_Fire"
+	safeSet(fire, "Size", size)
+	safeSet(fire, "Heat", heat)
+	safeSet(fire, "Color", ORANGE)
+	safeSet(fire, "SecondaryColor", YELLOW)
+	fire.Parent = parent
+	return fire
+end
+
+local function makeEmitter(parent, name, colorA, colorB, rate, lifeA, lifeB, speedA, speedB, size, accelY)
+	local emitter = safeCall(function()
+		return Instance.new("ParticleEmitter")
+	end)
+
+	if not emitter then
+		return nil
+	end
+
+	emitter.Name = name
+
+	safeCall(function()
+		emitter.Color = ColorSequence.new(colorA, colorB)
+	end)
+
+	safeCall(function()
+		emitter.Lifetime = NumberRange.new(lifeA, lifeB)
+	end)
+
+	safeCall(function()
+		emitter.Speed = NumberRange.new(speedA, speedB)
+	end)
+
+	safeCall(function()
+		emitter.Size = NumberSequence.new(size)
+	end)
+
+	safeCall(function()
+		emitter.Transparency = NumberSequence.new(0.25)
+	end)
+
+	safeCall(function()
+		emitter.SpreadAngle = Vector2.new(180, 180)
+	end)
+
+	safeCall(function()
+		emitter.Acceleration = Vector3.new(0, accelY or 0, 0)
+	end)
+
+	safeSet(emitter, "Rate", rate)
+	safeSet(emitter, "LightEmission", 0.35)
+	safeSet(emitter, "Enabled", true)
+
+	emitter.Parent = parent
+	return emitter
+end
+
+local function emitBurst(parent, name, colorA, colorB, amount, speedA, speedB, size, accelY)
+	local e = makeEmitter(parent, name, colorA, colorB, 0, 1.5, 4, speedA, speedB, size, accelY)
+
+	if e then
+		safeCall(function()
+			e:Emit(amount)
+		end)
+
+		safeSet(e, "Enabled", false)
+	end
+
+	return e
+end
+
+local function doTween(instance, seconds, props, style, direction)
+	local info = safeCall(function()
+		return TweenInfo.new(
+			seconds,
+			style or Enum.EasingStyle.Quad,
+			direction or Enum.EasingDirection.Out
+		)
+	end)
+
+	if info then
+		safeCall(function()
+			tween(instance, info, props)
+		end)
+	else
+		for k, v in pairs(props) do
+			safeSet(instance, k, v)
+		end
+	end
+end
+
+local function validSoundId(id)
+	if not id then
+		return false
+	end
+
+	local text = tostring(id)
+	return text ~= "" and text ~= "0"
+end
+
+local function makeSound(name, id, volume, speed, parent)
+	if not validSoundId(id) then
+		return nil
+	end
+
+	local s = Instance.new("Sound")
+	s.Name = name
+	s.SoundId = "rbxassetid://" .. tostring(id)
+	s.Volume = volume or 1
+
+	safeSet(s, "PlaybackSpeed", speed or 1)
+	safeSet(s, "RollOffMaxDistance", 100000)
+	safeSet(s, "EmitterSize", 220)
+
+	s.Parent = parent or Runtime
+	return s
+end
+
+local function playSoundId(name, id, volume, speed, parent)
+	local s = makeSound(name, id, volume, speed, parent)
+
+	if s then
+		safeCall(function()
+			playSound(s)
+		end)
+	end
+
+	return s
+end
+
+local function playLoopedSoundId(name, id, volume, speed, parent)
+	local s = makeSound(name, id, volume, speed, parent)
+
+	if s then
+		safeSet(s, "Looped", true)
+		safeCall(function()
+			playSound(s)
+		end)
+	end
+
+	return s
+end
+
+local function fadeAndStopSound(sound, fadeSeconds)
+	if not sound then
+		return
+	end
+
+	local originalVolume = safeCall(function()
+		return sound.Volume
+	end) or 1
+
+	local elapsed = 0
+	local step = 0.15
+
+	while elapsed < fadeSeconds do
+		local t = clamp(elapsed / fadeSeconds, 0, 1)
+		safeSet(sound, "Volume", lerp(originalVolume, 0, t))
+		wait(step)
+		elapsed = elapsed + step
+	end
+
+	safeSet(sound, "Volume", 0)
+
+	safeCall(function()
+		sound:Stop()
+	end)
+
+	safeCall(function()
+		sound:Destroy()
+	end)
+end
+
+local function playSoundIdAndWait(name, id, volume, speed, parent, fallbackSeconds)
+	local s = makeSound(name, id, volume, speed, parent)
+
+	if not s then
+		if fallbackSeconds and fallbackSeconds > 0 then
+			wait(fallbackSeconds)
+		end
+		return
+	end
+
+	local ended = false
+
+	safeCall(function()
+		s.Ended:Connect(function()
+			ended = true
+		end)
+	end)
+
+	safeCall(function()
+		playSound(s)
+	end)
+
+	local maxWait = fallbackSeconds or 0
+
+	local timeLength = safeCall(function()
+		return s.TimeLength
+	end)
+
+	if timeLength and timeLength > 0 and timeLength < 120 then
+		maxWait = timeLength + 0.2
+	end
+
+	local elapsed = 0
+	while elapsed < maxWait do
+		if ended then
+			return
+		end
+
+		wait(0.1)
+		elapsed = elapsed + 0.1
+	end
+end
+
+local function setSign(text)
+	if COUNTDOWN_SIGN_NAME and COUNTDOWN_SIGN_NAME ~= "" then
+		safeCall(function()
+			setSignText(COUNTDOWN_SIGN_NAME, text)
+		end)
+	end
+end
+
+local function showTitle(text, color)
+	if not USE_TITLES then
+		return
+	end
+
+	safeCall(function()
+		title(text, color or WHITE)
+	end)
+end
+
+local function showSubtitle(text, color)
+	if not USE_TITLES then
+		return
+	end
+
+	safeCall(function()
+		subtitle(text, color or WHITE)
+	end)
+end
+
+local function clearBombProp()
+	if BombFolder then
+		safeCall(function()
+			BombFolder:Destroy()
+		end)
+	end
+
+	BombFolder = makeFolder("Bomb_Prop", Runtime)
+	BombProp = nil
+end
+
+local function createBombProp(center)
+	clearBombProp()
+
+	local base = center + Vector3.new(0, 9, 0)
+
+	local body = makePart(
+		"Bomb_Body",
+		Enum.PartType.Ball,
+		Vector3.new(5.2, 11, 5.2),
+		CFrame.new(base),
+		rgb(45, 48, 52),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	local nose = makePart(
+		"Bomb_Nose",
+		Enum.PartType.Ball,
+		Vector3.new(4, 3.2, 4),
+		CFrame.new(base + Vector3.new(0, 6.1, 0)),
+		rgb(85, 90, 95),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	local tail = makePart(
+		"Bomb_Tail",
+		Enum.PartType.Ball,
+		Vector3.new(4.3, 2.2, 4.3),
+		CFrame.new(base + Vector3.new(0, -6.1, 0)),
+		rgb(32, 34, 38),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	local band1 = makePart(
+		"Bomb_YellowBand_Upper",
+		nil,
+		Vector3.new(5.7, 0.35, 5.7),
+		CFrame.new(base + Vector3.new(0, 2.7, 0)),
+		YELLOW,
+		Enum.Material.Neon,
+		0.15,
+		BombFolder
+	)
+
+	local band2 = makePart(
+		"Bomb_RedBand_Lower",
+		nil,
+		Vector3.new(5.7, 0.35, 5.7),
+		CFrame.new(base + Vector3.new(0, -2.7, 0)),
+		RED,
+		Enum.Material.Neon,
+		0.15,
+		BombFolder
+	)
+
+	local core = makePart(
+		"Bomb_ArmingCore",
+		Enum.PartType.Ball,
+		Vector3.new(1.2, 1.2, 1.2),
+		CFrame.new(base + Vector3.new(0, 0, -2.85)),
+		RED,
+		Enum.Material.Neon,
+		0,
+		BombFolder
+	)
+
+	local coreLight = makeLight(core, RED, 20, 3)
+
+	makePart(
+		"Bomb_Fin_A",
+		nil,
+		Vector3.new(0.35, 3.2, 2.1),
+		CFrame.new(base + Vector3.new(2.8, -5, 0)),
+		rgb(38, 40, 44),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	makePart(
+		"Bomb_Fin_B",
+		nil,
+		Vector3.new(0.35, 3.2, 2.1),
+		CFrame.new(base + Vector3.new(-2.8, -5, 0)),
+		rgb(38, 40, 44),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	makePart(
+		"Bomb_Fin_C",
+		nil,
+		Vector3.new(2.1, 3.2, 0.35),
+		CFrame.new(base + Vector3.new(0, -5, 2.8)),
+		rgb(38, 40, 44),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	makePart(
+		"Bomb_Fin_D",
+		nil,
+		Vector3.new(2.1, 3.2, 0.35),
+		CFrame.new(base + Vector3.new(0, -5, -2.8)),
+		rgb(38, 40, 44),
+		Enum.Material.Metal,
+		0,
+		BombFolder
+	)
+
+	BombProp = {
+		Folder = BombFolder,
+		Body = body,
+		Nose = nose,
+		Tail = tail,
+		Band1 = band1,
+		Band2 = band2,
+		Core = core,
+		CoreLight = coreLight,
+		Center = center
+	}
+
+	return BombProp
+end
+
+local function makeCountdownPulse(center, progress)
+	if not ActiveEffectFolder then
+		return
+	end
+
+	local radius = lerp(8, 75, progress)
+	local height = lerp(0.35, 0.08, progress)
+	local duration = lerp(0.75, 0.16, progress)
+
+	local pulse = makePart(
+		"Countdown_RedPulse",
+		Enum.PartType.Ball,
+		Vector3.new(2, 0.18, 2),
+		CFrame.new(center + Vector3.new(0, 0.45, 0)),
+		RED,
+		Enum.Material.Neon,
+		0.45,
+		ActiveEffectFolder
+	)
+
+	doTween(
+		pulse,
+		duration,
+		{
+			Size = Vector3.new(radius * 2, height, radius * 2),
+			Transparency = 1
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+end
+
+local function pulseBomb(progress, interval)
+	if not BombProp then
+		return
+	end
+
+	if BombProp.Core then
+		local size = lerp(1.2, 2.25, progress)
+		local brightness = lerp(3, 14, progress)
+		local range = lerp(18, 42, progress)
+
+		safeSet(BombProp.Core, "Color", rgb(255, math.floor(lerp(30, 160, progress)), 20))
+
+		doTween(
+			BombProp.Core,
+			interval * 0.55,
+			{
+				Size = Vector3.new(size, size, size),
+				Transparency = lerp(0.05, 0, progress)
+			},
+			Enum.EasingStyle.Sine,
+			Enum.EasingDirection.Out
+		)
+
+		if BombProp.CoreLight then
+			doTween(
+				BombProp.CoreLight,
+				interval * 0.55,
+				{
+					Brightness = brightness,
+					Range = range
+				},
+				Enum.EasingStyle.Sine,
+				Enum.EasingDirection.Out
+			)
+		end
+	end
+
+	if BombProp.Band1 then
+		safeSet(BombProp.Band1, "Transparency", lerp(0.35, 0.02, progress))
+	end
+
+	if BombProp.Band2 then
+		safeSet(BombProp.Band2, "Transparency", lerp(0.35, 0.02, progress))
+	end
+end
+
+local function countdownLighting(progress)
+	local red = math.floor(lerp(90, 255, progress))
+	local green = math.floor(lerp(0, 40, progress))
+	local blue = math.floor(lerp(0, 15, progress))
+
+	safeCall(function()
+		colorLights(red, green, blue)
+	end)
+
+	if progress > 0.65 then
+		safeCall(function()
+			disableLights(1)
+		end)
+	end
+end
+
+local function createWhiteFlash(center)
+	local flash = makePart(
+		"WhiteFlash",
+		Enum.PartType.Ball,
+		Vector3.new(4, 4, 4),
+		CFrame.new(center + Vector3.new(0, 18, 0)),
+		WHITE,
+		Enum.Material.Neon,
+		0,
+		ActiveEffectFolder
+	)
+
+	local flashLight = makeLight(flash, WHITE, 80, 30)
+
+	doTween(
+		flash,
+		1.35,
+		{
+			Size = Vector3.new(FLASH_RADIUS, FLASH_RADIUS, FLASH_RADIUS),
+			Transparency = 1
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	doTween(
+		flashLight,
+		1.55,
+		{
+			Range = FLASH_RADIUS * 1.5,
+			Brightness = 0
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	local groundFlash = makePart(
+		"GroundFlash",
+		Enum.PartType.Ball,
+		Vector3.new(12, 0.4, 12),
+		CFrame.new(center + Vector3.new(0, 0.25, 0)),
+		WHITE,
+		Enum.Material.Neon,
+		0.05,
+		ActiveEffectFolder
+	)
+
+	doTween(
+		groundFlash,
+		1.05,
+		{
+			Size = Vector3.new(FLASH_RADIUS * 1.15, 1.5, FLASH_RADIUS * 1.15),
+			Transparency = 1
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+end
+
+local function createFireball(center)
+	local inner = makePart(
+		"Fireball_InnerWhite",
+		Enum.PartType.Ball,
+		Vector3.new(8, 8, 8),
+		CFrame.new(center + Vector3.new(0, 24, 0)),
+		WHITE,
+		Enum.Material.Neon,
+		0,
+		ActiveEffectFolder
+	)
+
+	local middle = makePart(
+		"Fireball_Yellow",
+		Enum.PartType.Ball,
+		Vector3.new(12, 12, 12),
+		CFrame.new(center + Vector3.new(0, 22, 0)),
+		YELLOW,
+		Enum.Material.Neon,
+		0.12,
+		ActiveEffectFolder
+	)
+
+	local outer = makePart(
+		"Fireball_Orange",
+		Enum.PartType.Ball,
+		Vector3.new(18, 18, 18),
+		CFrame.new(center + Vector3.new(0, 19, 0)),
+		ORANGE,
+		Enum.Material.Neon,
+		0.24,
+		ActiveEffectFolder
+	)
+
+	makeLight(inner, WHITE, 160, 22)
+	makeFire(outer, 35, 25)
+	makeSmoke(outer, 55, 0.4, 22)
+	emitBurst(outer, "Fireball_Sparks", YELLOW, ORANGE, 220, 60, 180, 2.2, 24)
+
+	doTween(
+		inner,
+		2.15,
+		{
+			Size = Vector3.new(FIREBALL_RADIUS * 0.65, FIREBALL_RADIUS * 0.65, FIREBALL_RADIUS * 0.65),
+			Transparency = 0.68
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	doTween(
+		middle,
+		2.8,
+		{
+			Size = Vector3.new(FIREBALL_RADIUS, FIREBALL_RADIUS, FIREBALL_RADIUS),
+			Transparency = 0.72
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+
+	doTween(
+		outer,
+		3.65,
+		{
+			Size = Vector3.new(FIREBALL_RADIUS * 1.25, FIREBALL_RADIUS * 1.25, FIREBALL_RADIUS * 1.25),
+			Transparency = 0.88
+		},
+		Enum.EasingStyle.Quad,
+		Enum.EasingDirection.Out
+	)
+end
+
+local function createShockwaves(center)
+	for i = 1, 7 do
+		local progress = i / 7
+		local targetRadius = lerp(70, SHOCKWAVE_RADIUS, progress)
+		local duration = lerp(0.85, 2.8, progress)
+
+		local ring = makePart(
+			"Shockwave_Ring_" .. tostring(i),
+			Enum.PartType.Ball,
+			Vector3.new(10, 0.25, 10),
+			CFrame.new(center + Vector3.new(0, 1.1 + i * 0.08, 0)),
+			rgb(255, math.floor(lerp(230, 110, progress)), math.floor(lerp(150, 55, progress))),
+			Enum.Material.Neon,
+			0.32,
+			ActiveEffectFolder
+		)
+
+		doTween(
+			ring,
+			duration,
+			{
+				Size = Vector3.new(targetRadius * 2, lerp(1.5, 0.2, progress), targetRadius * 2),
+				Transparency = 1
+			},
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		)
+
+		wait(0.09)
+	end
+end
+
+local function createDustWall(center)
+	for i = 1, 12 do
+		local progress = i / 12
+		local radius = lerp(22, 260, progress)
+
+		local dust = makePart(
+			"Dust_Wall_" .. tostring(i),
+			Enum.PartType.Ball,
+			Vector3.new(12, 4, 12),
+			CFrame.new(center + Vector3.new(0, lerp(2, 22, progress), 0)),
+			rgb(90, 78, 62),
+			Enum.Material.SmoothPlastic,
+			0.38,
+			ActiveEffectFolder
+		)
+
+		makeSmoke(dust, lerp(24, 80, progress), 0.55, lerp(8, 24, progress))
+
+		doTween(
+			dust,
+			lerp(3, 8, progress),
+			{
+				Size = Vector3.new(radius * 2, lerp(8, 45, progress), radius * 2),
+				Transparency = 0.92
+			},
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		)
+	end
+end
+
+local function createMushroomCloud(center)
+	local stemBaseY = 22
+
+	for i = 1, 12 do
+		local progress = i / 12
+		local height = stemBaseY + progress * MUSHROOM_HEIGHT * 0.65
+		local wobbleX = math.random(-80, 80) / 10
+		local wobbleZ = math.random(-80, 80) / 10
+
+		local stem = makePart(
+			"Mushroom_Stem_" .. tostring(i),
+			Enum.PartType.Ball,
+			Vector3.new(14, 14, 14),
+			CFrame.new(center + Vector3.new(wobbleX, height, wobbleZ)),
+			rgb(
+				math.floor(lerp(125, 70, progress)),
+				math.floor(lerp(118, 70, progress)),
+				math.floor(lerp(105, 70, progress))
+			),
+			Enum.Material.SmoothPlastic,
+			0.15,
+			ActiveEffectFolder
+		)
+
+		makeSmoke(stem, lerp(35, 85, progress), 0.65, lerp(15, 35, progress))
+
+		doTween(
+			stem,
+			18,
+			{
+				Size = Vector3.new(
+					lerp(34, 70, progress),
+					lerp(28, 62, progress),
+					lerp(34, 70, progress)
+				),
+				CFrame = CFrame.new(center + Vector3.new(wobbleX * 2.4, height + 35, wobbleZ * 2.4)),
+				Transparency = 0.72
+			},
+			Enum.EasingStyle.Sine,
+			Enum.EasingDirection.Out
+		)
+
+		wait(0.05)
+	end
+
+	local capCenter = center + Vector3.new(0, MUSHROOM_HEIGHT, 0)
+
+	local capCore = makePart(
+		"Mushroom_Cap_Core",
+		Enum.PartType.Ball,
+		Vector3.new(38, 22, 38),
+		CFrame.new(capCenter),
+		SMOKE,
+		Enum.Material.SmoothPlastic,
+		0.1,
+		ActiveEffectFolder
+	)
+
+	makeSmoke(capCore, 120, 0.75, 18)
+
+	doTween(
+		capCore,
+		20,
+		{
+			Size = Vector3.new(150, 58, 150),
+			CFrame = CFrame.new(capCenter + Vector3.new(0, 35, 0)),
+			Transparency = 0.78
+		},
+		Enum.EasingStyle.Sine,
+		Enum.EasingDirection.Out
+	)
+
+	for i = 1, 24 do
+		local angle = (math.pi * 2) * (i / 24)
+		local ringRadius = math.random(38, 78)
+		local x = math.cos(angle) * ringRadius
+		local z = math.sin(angle) * ringRadius
+		local y = math.random(-12, 18)
+
+		local cloud = makePart(
+			"Mushroom_Cap_Roll_" .. tostring(i),
+			Enum.PartType.Ball,
+			Vector3.new(math.random(18, 32), math.random(14, 26), math.random(18, 32)),
+			CFrame.new(capCenter + Vector3.new(x, y, z)),
+			rgb(math.random(55, 120), math.random(55, 115), math.random(55, 105)),
+			Enum.Material.SmoothPlastic,
+			0.18,
+			ActiveEffectFolder
+		)
+
+		makeSmoke(cloud, math.random(60, 115), 0.6, math.random(12, 26))
+
+		doTween(
+			cloud,
+			math.random(16, 26),
+			{
+				Size = Vector3.new(math.random(55, 95), math.random(28, 62), math.random(55, 95)),
+				CFrame = CFrame.new(capCenter + Vector3.new(x * 1.8, y + math.random(20, 55), z * 1.8)),
+				Transparency = 0.85
+			},
+			Enum.EasingStyle.Sine,
+			Enum.EasingDirection.Out
+		)
+	end
+end
+
+local function createDebris(center)
+	for i = 1, 70 do
+		local x = math.random(-42, 42)
+		local z = math.random(-42, 42)
+		local up = math.random(25, 120)
+
+		local debris = makePart(
+			"Blast_Debris_" .. tostring(i),
+			nil,
+			Vector3.new(
+				math.random(3, 10) / 10,
+				math.random(3, 12) / 10,
+				math.random(3, 10) / 10
+			),
+			CFrame.new(center + Vector3.new(x / 2, math.random(4, 18), z / 2)),
+			rgb(math.random(40, 110), math.random(35, 90), math.random(30, 75)),
+			Enum.Material.Slate,
+			0,
+			ActiveEffectFolder
+		)
+
+		local outward = Vector3.new(x * math.random(4, 9), up, z * math.random(4, 9))
+
+		doTween(
+			debris,
+			math.random(4, 10),
+			{
+				CFrame = CFrame.new(center + outward),
+				Transparency = 1
+			},
+			Enum.EasingStyle.Quad,
+			Enum.EasingDirection.Out
+		)
+	end
+end
+
+local function createAshRain(center)
+	for i = 1, 90 do
+		local x = math.random(-240, 240)
+		local z = math.random(-240, 240)
+		local startY = math.random(100, 230)
+		local endY = math.random(5, 35)
+
+		local ash = makePart(
+			"Falling_Ash_" .. tostring(i),
+			nil,
+			Vector3.new(0.25, 0.08, 0.25),
+			CFrame.new(center + Vector3.new(x, startY, z)),
+			rgb(math.random(120, 190), math.random(120, 190), math.random(120, 190)),
+			Enum.Material.SmoothPlastic,
+			0.25,
+			ActiveEffectFolder
+		)
+
+		doTween(
+			ash,
+			math.random(18, 34),
+			{
+				CFrame = CFrame.new(center + Vector3.new(x + math.random(-50, 50), endY, z + math.random(-50, 50))),
+				Transparency = 1
+			},
+			Enum.EasingStyle.Sine,
+			Enum.EasingDirection.Out
+		)
+	end
+end
+
+local function applyPlayerDamage(center)
+	if not ENABLE_PLAYER_DAMAGE then
+		return
+	end
+
+	local players = safeCall(function()
+		return getPlayers()
+	end)
+
+	if not players then
+		return
+	end
+
+	for i = 1, #players do
+		local name = players[i]
+		local rawPos = safeCall(function()
+			return getPlayerPosition(name)
+		end)
+
+		local pos = nil
+
+		if rawPos then
+			pos = safeCall(function()
+				return rawPos.Position
+			end)
+
+			if not pos then
+				pos = rawPos
+			end
+		end
+
+		if pos then
+			local dist = vectorDistance(pos, center)
+
+			if dist <= INSTANT_KILL_RADIUS then
+				safeCall(function()
+					kill(name)
+				end)
+			elseif dist <= HEAVY_DAMAGE_RADIUS then
+				local t = 1 - ((dist - INSTANT_KILL_RADIUS) / (HEAVY_DAMAGE_RADIUS - INSTANT_KILL_RADIUS))
+				local amount = math.floor(MAX_DAMAGE * clamp(t, 0, 1))
+
+				safeCall(function()
+					damage(name, amount)
+				end)
+			end
+		end
+	end
+end
+
+local sequenceRunning = false
+local hasDetonated = false
+
+local function runCountdown(center)
+	showTitle("NUCLEAR DEVICE ARMED", RED)
+	showSubtitle("Countdown begins after authorization.", YELLOW)
+	setSign("ARMED")
+
+	playSoundIdAndWait(
+		"Nuke_Intro_Authorization",
+		INTRO_SOUND_ID,
+		1.8,
+		1,
+		Runtime,
+		INTRO_FALLBACK_SECONDS
+	)
+
+	showTitle("T-MINUS 40", RED)
+	showSubtitle("Evacuate the blast area.", ORANGE)
+
+	local elapsed = 0
+	local lastSecond = -1
+	local beepCount = 0
+
+	while elapsed < COUNTDOWN_SECONDS do
+		local progress = clamp(elapsed / COUNTDOWN_SECONDS, 0, 1)
+		local secondsLeft = math.ceil(COUNTDOWN_SECONDS - elapsed)
+
+		if secondsLeft ~= lastSecond then
+			lastSecond = secondsLeft
+			setSign("T-" .. tostring(secondsLeft))
+
+			if secondsLeft == 30 then
+				showSubtitle("Thirty seconds.", ORANGE)
+			elseif secondsLeft == 20 then
+				showSubtitle("Twenty seconds.", ORANGE)
+			elseif secondsLeft == 10 then
+				showSubtitle("Ten seconds.", RED)
+			elseif secondsLeft <= 5 then
+				showTitle(tostring(secondsLeft), RED)
+			end
+		end
+
+		local pitch = lerp(0.85, 1.75, progress)
+		local volume = lerp(0.65, 1.7, progress)
+
+		playSoundId(
+			"Nuke_Countdown_Beep_" .. tostring(beepCount),
+			COUNTDOWN_BEEP_SOUND_ID,
+			volume,
+			pitch,
+			Runtime
+		)
+
+		makeCountdownPulse(center, progress)
+		pulseBomb(progress, BEEP_START_INTERVAL)
+		countdownLighting(progress)
+
+		if progress > 0.82 then
+			safeCall(function()
+				blackoutLights(false, true)
+			end)
+		end
+
+		local interval = lerp(
+			BEEP_START_INTERVAL,
+			BEEP_END_INTERVAL,
+			math.pow(progress, BEEP_ACCEL_POWER)
+		)
+
+		if elapsed + interval > COUNTDOWN_SECONDS then
+			interval = COUNTDOWN_SECONDS - elapsed
+		end
+
+		wait(interval)
+
+		elapsed = elapsed + interval
+		beepCount = beepCount + 1
+	end
+
+	setSign("DETONATION")
+	showTitle("DETONATION", WHITE)
+	showSubtitle("Final ignition sequence.", RED)
+
+	playSoundIdAndWait(
+		"Nuke_Final_Warning",
+		FINAL_WARNING_SOUND_ID,
+		2.5,
+		1,
+		Runtime,
+		FINAL_WARNING_FALLBACK_SECONDS
+	)
+end
+
+local function runExplosion(center)
+	if BombProp and BombProp.Folder then
+		safeCall(function()
+			BombProp.Folder:Destroy()
+		end)
+	end
+
+	safeCall(function()
+		blackoutLights(false, false)
+	end)
+
+	safeCall(function()
+		colorLights(255, 255, 255)
+	end)
+
+	playSoundId("Nuke_Explosion_Boom", SND_EXPLOSION_BOOM_ID, 3, 1, Runtime)
+	playSoundId("Nuke_Long_Rumble", SND_LONG_RUMBLE_ID, 2.4, 1, Runtime)
+	playSoundId("Nuke_Fire_Wind", SND_FIRE_WIND_ID, 1.8, 1, Runtime)
+
+	createWhiteFlash(center)
+
+	wait(0.16)
+
+	createFireball(center)
+	applyPlayerDamage(center)
+
+	safeCall(function()
+		local ex = Instance.new("Explosion")
+		ex.Name = "Cinematic_Nuke_Explosion"
+		ex.Position = center + Vector3.new(0, 8, 0)
+		ex.BlastRadius = 0
+		ex.BlastPressure = 0
+		ex.DestroyJointRadiusPercent = 0
+		ex.Parent = ActiveEffectFolder
+	end)
+
+	wait(0.12)
+
+	playSoundId("Nuke_Shockwave_Crack", SND_SHOCKWAVE_CRACK_ID, 2.2, 1, Runtime)
+	createShockwaves(center)
+
+	wait(0.25)
+
+	createDustWall(center)
+	createDebris(center)
+	playSoundId("Nuke_Debris_Rattle", SND_DEBRIS_RATTLE_ID, 1.7, 1, Runtime)
+
+	wait(0.55)
+
+	safeCall(function()
+		colorLights(255, 135, 45)
+	end)
+
+	createMushroomCloud(center)
+
+	wait(1.2)
+
+	createAshRain(center)
+
+	local geigerSound = playLoopedSoundId("Nuke_Geiger_Static_Looped", SND_GEIGER_STATIC_ID, 1.1, 1, Runtime)
+
+	safeCall(function()
+		blackoutLights(true, false)
+	end)
+
+	wait(1.5)
+
+	safeCall(function()
+		blackoutLights(false, true)
+	end)
+
+	safeCall(function()
+		colorLights(120, 70, 45)
+	end)
+
+	wait(GEIGER_LOOP_SECONDS)
+
+	fadeAndStopSound(geigerSound, 5)
+
+	safeCall(function()
+		resetLights()
+	end)
+
+	setSign("FALLOUT")
+	showSubtitle("Fallout cloud dissipating.", SMOKE)
+
+	wait(20)
+
+	if ActiveEffectFolder then
+		safeCall(function()
+			ActiveEffectFolder:Destroy()
+		end)
+	end
+
+	ActiveEffectFolder = nil
+
+	if not hasDetonated then
+		hasDetonated = true
+	end
+
+	setSign("STANDBY")
+	createBombProp(getGroundZero())
+
+	sequenceRunning = false
+end
+
+local function startNukeSequence(playerName)
+	if sequenceRunning then
+		if playerName then
+			safeCall(function()
+				subtitle("Nuke sequence is already running.", playerName)
+			end)
+		end
+		return
+	end
+
+	sequenceRunning = true
+
+	local center = getGroundZero()
+
+	if ActiveEffectFolder then
+		safeCall(function()
+			ActiveEffectFolder:Destroy()
+		end)
+	end
+
+	ActiveEffectFolder = makeFolder("Nuke_Effect_Run", Runtime)
+
+	createBombProp(center)
+
+	safeCall(function()
+		colorLights(90, 0, 0)
+	end)
+
+	setSign("AUTHORIZING")
+
+	runCountdown(center)
+	runExplosion(center)
+end
+
+setSign("STANDBY")
+createBombProp(getGroundZero())
+
+event("interaction", function(Data)
+	local playerName = nil
+	local interactionName = nil
+
+	if Data and Data.Value then
+		playerName = Data.Value[1]
+		interactionName = Data.Value[2]
+	elseif Data then
+		playerName = Data[1]
+		interactionName = Data[2]
+	end
+
+	if interactionName == INTERACTION_NAME then
+		startNukeSequence(playerName)
+	end
+end)
